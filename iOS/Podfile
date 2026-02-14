@@ -1,0 +1,14 @@
+# Uncomment the next line to define a global platform for your project
+# platform :ios, '15.0'
+
+workspace 'CameraGestures'
+
+target 'HandsRecognizingModule' do
+project 'HandsRecognizing/HandsRecognizing/HandsRecognizingModule.xcodeproj'
+  # Comment the next line if you don't want to use dynamic frameworks
+  use_frameworks!
+
+  # Pods for GestureRecognizer
+  pod 'MediaPipeTasksVision', '0.10.14'
+
+end
