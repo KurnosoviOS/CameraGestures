@@ -12,7 +12,7 @@ Pod::Spec.new do |spec|
   spec.license          = { :type => 'MIT', :text => 'Private module - not for distribution' }
   spec.author           = { 'Developer' => 'developer@example.com' }
 
-  spec.platform         = :ios, '15.0'
+  spec.platform         = :ios, '16.0'
   spec.swift_version    = '5.0'
 
   # Source location (local path)

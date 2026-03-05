@@ -411,7 +411,8 @@ struct SettingsView: View {
 
 struct ModelInfoView: View {
     @EnvironmentObject var gestureRecognizer: GestureRecognizerWrapper
-    
+    @EnvironmentObject var gestureRegistry: GestureRegistry
+
     var body: some View {
         List {
             Section("Model Details") {
@@ -420,18 +421,31 @@ struct ModelInfoView: View {
                 InfoRow(title: "Backend", value: "Mock Backend")
                 InfoRow(title: "Size", value: "~1.2 MB")
             }
-            
-            Section("Supported Gestures") {
-                ForEach(GestureType.allCases, id: \.self) { gestureType in
-                    HStack {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(.green)
-                        
-                        Text(gestureType.displayName)
+
+            Section("Defined Gestures (\(gestureRegistry.gestures.count))") {
+                if gestureRegistry.gestures.isEmpty {
+                    Text("No gestures defined yet")
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(gestureRegistry.gestures) { gesture in
+                        HStack {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(gesture.name)
+                                if !gesture.description.isEmpty {
+                                    Text(gesture.description)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                        }
                     }
                 }
             }
-            
+
             Section("Performance") {
                 InfoRow(title: "Average Latency", value: "~45ms")
                 InfoRow(title: "Accuracy", value: "~87%")
@@ -572,6 +586,7 @@ struct SettingsView_Previews: PreviewProvider {
     static var previews: some View {
         SettingsView()
             .environmentObject(AppSettings())
-            .environmentObject(GestureRecognizerWrapper(recognizer:  HandGestureRecognizing()))
+            .environmentObject(GestureRecognizerWrapper(recognizer: HandGestureRecognizing()))
+            .environmentObject(GestureRegistry())
     }
 }

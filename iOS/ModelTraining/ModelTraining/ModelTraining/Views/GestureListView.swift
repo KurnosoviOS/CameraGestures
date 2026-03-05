@@ -4,21 +4,17 @@ import GestureModelModule
 
 struct GestureListView: View {
     @EnvironmentObject var trainingDataManager: TrainingDataManager
-    @State private var selectedGestureType: GestureType?
+    @EnvironmentObject var gestureRegistry: GestureRegistry
+
+    @State private var selectedGesture: GestureDefinition?
     @State private var showingGestureDetail = false
+    @State private var showingAddGestureSheet = false
     @State private var searchText = ""
-    
+
     var body: some View {
         NavigationView {
             VStack {
-                // Search Bar
-                if !trainingDataManager.trainingExamples.isEmpty {
-                    SearchBar(text: $searchText)
-                        .padding(.horizontal)
-                }
-                
-                // Gesture Categories
-                if trainingDataManager.trainingExamples.isEmpty {
+                if trainingDataManager.trainingExamples.isEmpty && gestureRegistry.gestures.isEmpty {
                     emptyStateView
                 } else {
                     gestureListContent
@@ -27,6 +23,13 @@ struct GestureListView: View {
             .navigationTitle("Gestures")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        showingAddGestureSheet = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Export") {
                         exportTrainingData()
@@ -36,41 +39,46 @@ struct GestureListView: View {
             }
         }
         .sheet(isPresented: $showingGestureDetail) {
-            if let selectedType = selectedGestureType {
-                GestureDetailView(gestureType: selectedType)
+            if let gesture = selectedGesture {
+                GestureDetailView(gesture: gesture)
+                    .environmentObject(trainingDataManager)
             }
         }
+        .sheet(isPresented: $showingAddGestureSheet) {
+            AddGestureSheet()
+                .environmentObject(gestureRegistry)
+        }
     }
-    
+
     // MARK: - UI Components
-    
+
     private var emptyStateView: some View {
         VStack(spacing: 20) {
             Image(systemName: "hand.raised.slash")
                 .font(.system(size: 60))
                 .foregroundColor(.gray)
-            
+
             Text("No Gestures Yet")
                 .font(.title2)
                 .fontWeight(.medium)
-            
-            Text("Start training to collect gesture data")
+
+            Text("Add a gesture definition to get started")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
-            
-            Button("Go to Training") {
-                // This would switch to training tab
-                // In a real app, you'd use a coordinator or environment object
+
+            Button {
+                showingAddGestureSheet = true
+            } label: {
+                Label("Add Gesture", systemImage: "plus")
             }
             .buttonStyle(.borderedProminent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    
+
     private var gestureListContent: some View {
         List {
-            // Statistics Section
             Section("Overview") {
                 StatisticRow(
                     title: "Total Examples",
@@ -78,14 +86,14 @@ struct GestureListView: View {
                     icon: "chart.bar.fill",
                     color: .blue
                 )
-                
+
                 StatisticRow(
-                    title: "Gesture Types",
-                    value: "\(uniqueGestureTypes.count)",
+                    title: "Defined Gestures",
+                    value: "\(gestureRegistry.gestures.count)",
                     icon: "hand.raised.fill",
                     color: .green
                 )
-                
+
                 StatisticRow(
                     title: "Training Sessions",
                     value: "\(uniqueSessions.count)",
@@ -93,108 +101,95 @@ struct GestureListView: View {
                     color: .orange
                 )
             }
-            
-            // Gestures by Type
-            Section("Gesture Types") {
-                ForEach(filteredGestureTypes, id: \.self) { gestureType in
+
+            Section("Gesture Definitions") {
+                ForEach(filteredGestures) { gesture in
                     GestureTypeRow(
-                        gestureType: gestureType,
-                        exampleCount: getExampleCount(for: gestureType),
-                        lastRecorded: getLastRecorded(for: gestureType)
+                        gesture: gesture,
+                        exampleCount: getExampleCount(for: gesture),
+                        lastRecorded: getLastRecorded(for: gesture)
                     ) {
-                        selectedGestureType = gestureType
+                        selectedGesture = gesture
                         showingGestureDetail = true
                     }
                 }
+                .onDelete { offsets in
+                    deleteGestures(at: offsets)
+                }
+
+                Button {
+                    showingAddGestureSheet = true
+                } label: {
+                    Label("Add Gesture", systemImage: "plus.circle")
+                }
             }
-            
-            // Recent Examples
+
             if !recentExamples.isEmpty {
                 Section("Recent Examples") {
                     ForEach(recentExamples.indices, id: \.self) { index in
-                        let example = recentExamples[index]
-                        ExampleRow(example: example)
+                        ExampleRow(example: recentExamples[index], gestureRegistry: gestureRegistry)
                     }
                 }
             }
         }
         .searchable(text: $searchText, prompt: "Search gestures...")
     }
-    
+
     // MARK: - Computed Properties
-    
-    private var uniqueGestureTypes: [GestureType] {
-        Array(Set(trainingDataManager.trainingExamples.map { $0.gestureType }))
-            .sorted { $0.displayName < $1.displayName }
-    }
-    
-    private var filteredGestureTypes: [GestureType] {
+
+    private var filteredGestures: [GestureDefinition] {
         if searchText.isEmpty {
-            return uniqueGestureTypes
+            return gestureRegistry.gestures
         } else {
-            return uniqueGestureTypes.filter { 
-                $0.displayName.localizedCaseInsensitiveContains(searchText)
+            return gestureRegistry.gestures.filter {
+                $0.name.localizedCaseInsensitiveContains(searchText) ||
+                $0.description.localizedCaseInsensitiveContains(searchText)
             }
         }
     }
-    
+
     private var uniqueSessions: [String] {
         Array(Set(trainingDataManager.trainingExamples.map { $0.sessionId }))
     }
-    
+
     private var recentExamples: [TrainingExample] {
         Array(trainingDataManager.trainingExamples
             .sorted { $0.timestamp > $1.timestamp }
             .prefix(5))
     }
-    
+
     // MARK: - Helper Methods
-    
-    private func getExampleCount(for gestureType: GestureType) -> Int {
-        return trainingDataManager.trainingExamples.filter { $0.gestureType == gestureType }.count
+
+    private func getExampleCount(for gesture: GestureDefinition) -> Int {
+        trainingDataManager.trainingExamples.filter { $0.gestureId == gesture.id }.count
     }
-    
-    private func getLastRecorded(for gestureType: GestureType) -> Date {
-        let examples = trainingDataManager.trainingExamples.filter { $0.gestureType == gestureType }
-        let maxTimestamp = examples.map { $0.timestamp }.max() ?? 0
-        return Date(timeIntervalSince1970: maxTimestamp)
+
+    private func getLastRecorded(for gesture: GestureDefinition) -> Date? {
+        let timestamps = trainingDataManager.trainingExamples
+            .filter { $0.gestureId == gesture.id }
+            .map { $0.timestamp }
+        guard let max = timestamps.max() else { return nil }
+        return Date(timeIntervalSince1970: max)
     }
-    
+
+    private func deleteGestures(at offsets: IndexSet) {
+        for index in offsets {
+            let gesture = filteredGestures[index]
+            gestureRegistry.removeGesture(id: gesture.id)
+        }
+    }
+
     private func exportTrainingData() {
-        // In a real implementation, this would export the training data
-        // to a file format like JSON or CSV
-        print("Exporting training data...")
-        
-        // Create exportable data structure
         let exportData = trainingDataManager.trainingExamples.map { example in
             [
-                "gestureType": example.gestureType.rawValue,
-                "gestureName": example.gestureType.displayName,
+                "gestureId": example.gestureId,
                 "timestamp": example.timestamp,
                 "sessionId": example.sessionId,
                 "frameCount": example.handfilm.frames.count,
                 "duration": example.handfilm.duration
-            ]
+            ] as [String: Any]
         }
-        
-        // In real implementation, would save to file and present share sheet
         print("Export data prepared: \(exportData.count) examples")
-    }
-}
-
-// MARK: - Search Bar
-
-struct SearchBar: View {
-    @Binding var text: String
-    
-    var body: some View {
-        HStack {
-            Image(systemName: "magnifyingglass")
-                .foregroundColor(.secondary)
-            
-            TextField("Search gestures...", text: $text)
-                .textFieldStyle(RoundedBorderTextFieldStyle())
-        }
     }
 }
 
@@ -205,23 +200,23 @@ struct StatisticRow: View {
     let value: String
     let icon: String
     let color: Color
-    
+
     var body: some View {
         HStack {
             Image(systemName: icon)
                 .foregroundColor(color)
                 .frame(width: 24, height: 24)
-            
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.subheadline)
                     .foregroundColor(.secondary)
-                
+
                 Text(value)
                     .font(.title3)
                     .fontWeight(.medium)
             }
-            
+
             Spacer()
         }
         .padding(.vertical, 2)
@@ -231,53 +226,60 @@ struct StatisticRow: View {
 // MARK: - Gesture Type Row
 
 struct GestureTypeRow: View {
-    let gestureType: GestureType
+    let gesture: GestureDefinition
     let exampleCount: Int
-    let lastRecorded: Date
+    let lastRecorded: Date?
     let action: () -> Void
-    
+
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .short
         formatter.timeStyle = .short
         return formatter
     }()
-    
+
     var body: some View {
         Button(action: action) {
             HStack {
-                // Gesture Icon
-                Image(systemName: gestureIcon)
+                Image(systemName: "hand.raised")
                     .foregroundColor(.blue)
                     .frame(width: 30, height: 30)
                     .background(Color.blue.opacity(0.1))
                     .clipShape(Circle())
-                
+
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(gestureType.displayName)
+                    Text(gesture.name)
                         .font(.headline)
                         .foregroundColor(.primary)
-                    
+
+                    if !gesture.description.isEmpty {
+                        Text(gesture.description)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+
                     HStack {
                         Text("\(exampleCount) examples")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        
-                        Text("•")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        
-                        Text("Last: \(dateFormatter.string(from: lastRecorded))")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+
+                        if let date = lastRecorded {
+                            Text("•")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+
+                            Text("Last: \(dateFormatter.string(from: date))")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
-                
+
                 Spacer()
-                
-                // Quality Indicator
+
                 QualityIndicator(count: exampleCount)
-                
+
                 Image(systemName: "chevron.right")
                     .foregroundColor(.secondary)
                     .font(.caption)
@@ -286,28 +288,13 @@ struct GestureTypeRow: View {
         }
         .buttonStyle(.plain)
     }
-    
-    private var gestureIcon: String {
-        switch gestureType {
-        case .openHand: return "hand.raised"
-        case .closedFist: return "hand.raised.slash"
-        case .pointing: return "hand.point.right"
-        case .peace: return "hand.peace"
-        case .wave: return "hand.wave"
-        case .grab: return "hand.raised.fingers.spread"
-        case .swipeLeft: return "arrow.left"
-        case .swipeRight: return "arrow.right"
-        case .thumbsUp: return "hand.thumbsup"
-        case .thumbsDown: return "hand.thumbsdown"
-        }
-    }
 }
 
 // MARK: - Quality Indicator
 
 struct QualityIndicator: View {
     let count: Int
-    
+
     var body: some View {
         Circle()
             .fill(qualityColor)
@@ -318,25 +305,17 @@ struct QualityIndicator: View {
                     .foregroundColor(.white)
             )
     }
-    
+
     private var qualityColor: Color {
-        if count >= 20 {
-            return .green
-        } else if count >= 10 {
-            return .orange
-        } else {
-            return .red
-        }
+        if count >= 20 { return .green }
+        else if count >= 10 { return .orange }
+        else { return .red }
     }
-    
+
     private var qualityLevel: String {
-        if count >= 20 {
-            return "✓"
-        } else if count >= 10 {
-            return "~"
-        } else {
-            return "!"
-        }
+        if count >= 20 { return "✓" }
+        else if count >= 10 { return "~" }
+        else { return "!" }
     }
 }
 
@@ -344,45 +323,50 @@ struct QualityIndicator: View {
 
 struct ExampleRow: View {
     let example: TrainingExample
-    
+    let gestureRegistry: GestureRegistry
+
     private let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.timeStyle = .short
         return formatter
     }()
-    
+
+    private var gestureName: String {
+        gestureRegistry.gestures.first(where: { $0.id == example.gestureId })?.name ?? example.gestureId
+    }
+
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(example.gestureType.displayName)
+                Text(gestureName)
                     .font(.subheadline)
                     .fontWeight(.medium)
-                
+
                 HStack {
                     Text(timeFormatter.string(from: Date(timeIntervalSince1970: example.timestamp)))
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                    
+
                     Text("•")
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                    
+
                     Text("\(example.handfilm.frames.count) frames")
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                    
+
                     Text("•")
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                    
+
                     Text(String(format: "%.1fs", example.handfilm.duration))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
             }
-            
+
             Spacer()
-            
+
             Text(example.sessionId.prefix(8))
                 .font(.system(.caption2, design: .monospaced))
                 .foregroundColor(.secondary)
@@ -394,19 +378,34 @@ struct ExampleRow: View {
 // MARK: - Gesture Detail View
 
 struct GestureDetailView: View {
-    let gestureType: GestureType
+    let gesture: GestureDefinition
     @EnvironmentObject var trainingDataManager: TrainingDataManager
     @Environment(\.dismiss) private var dismiss
-    
+
     private var examples: [TrainingExample] {
-        trainingDataManager.trainingExamples.filter { $0.gestureType == gestureType }
+        trainingDataManager.trainingExamples
+            .filter { $0.gestureId == gesture.id }
             .sorted { $0.timestamp > $1.timestamp }
     }
-    
+
     var body: some View {
         NavigationView {
             List {
-                // Summary Section
+                Section("Gesture Info") {
+                    LabeledContent("Name", value: gesture.name)
+                    LabeledContent("ID", value: gesture.id)
+                    if !gesture.description.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Description")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text(gesture.description)
+                                .font(.subheadline)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+
                 Section("Summary") {
                     StatisticRow(
                         title: "Total Examples",
@@ -414,7 +413,7 @@ struct GestureDetailView: View {
                         icon: "chart.bar.fill",
                         color: .blue
                     )
-                    
+
                     if !examples.isEmpty {
                         StatisticRow(
                             title: "Average Duration",
@@ -422,7 +421,7 @@ struct GestureDetailView: View {
                             icon: "clock.fill",
                             color: .orange
                         )
-                        
+
                         StatisticRow(
                             title: "Average Frame Count",
                             value: "\(Int(averageFrameCount))",
@@ -431,76 +430,90 @@ struct GestureDetailView: View {
                         )
                     }
                 }
-                
-                // Examples List
+
                 Section("Examples") {
                     ForEach(examples.indices, id: \.self) { index in
-                        let example = examples[index]
-                        ExampleDetailRow(example: example, index: index + 1)
+                        ExampleDetailRow(example: examples[index], index: index + 1)
                     }
                 }
             }
-            .navigationTitle(gestureType.displayName)
+            .navigationTitle(gesture.name)
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
+                    Button("Done") { dismiss() }
                 }
             }
         }
     }
-    
+
     private var averageDuration: Double {
         guard !examples.isEmpty else { return 0 }
         return examples.map { $0.handfilm.duration }.reduce(0, +) / Double(examples.count)
     }
-    
+
     private var averageFrameCount: Double {
         guard !examples.isEmpty else { return 0 }
         return Double(examples.map { $0.handfilm.frames.count }.reduce(0, +)) / Double(examples.count)
     }
 }
 
+// MARK: - Example Detail Row
+
 struct ExampleDetailRow: View {
     let example: TrainingExample
     let index: Int
-    
+
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .short
         formatter.timeStyle = .medium
         return formatter
     }()
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text("Example #\(index)")
                     .font(.subheadline)
                     .fontWeight(.medium)
-                
+
                 Spacer()
-                
+
                 Text(dateFormatter.string(from: Date(timeIntervalSince1970: example.timestamp)))
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
-            
+
             HStack {
                 Label("\(example.handfilm.frames.count) frames", systemImage: "film")
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                
+
                 Label(String(format: "%.2fs", example.handfilm.duration), systemImage: "clock")
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                
+
                 Spacer()
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+// MARK: - Search Bar (kept for backward compat if referenced elsewhere)
+
+struct SearchBar: View {
+    @Binding var text: String
+
+    var body: some View {
+        HStack {
+            Image(systemName: "magnifyingglass")
+                .foregroundColor(.secondary)
+
+            TextField("Search gestures...", text: $text)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+        }
     }
 }
 
@@ -510,5 +523,6 @@ struct GestureListView_Previews: PreviewProvider {
     static var previews: some View {
         GestureListView()
             .environmentObject(TrainingDataManager())
+            .environmentObject(GestureRegistry())
     }
 }

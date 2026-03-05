@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import GestureModelModule
 import HandGestureTypes
 import HandsRecognizingModule
 import HandGestureRecognizingFramework
@@ -7,19 +8,48 @@ import HandGestureRecognizingFramework
 struct CameraView: View {
     @EnvironmentObject var gestureRecognizer: GestureRecognizerWrapper
     @EnvironmentObject var appSettings: AppSettings
-    
+
     @State private var isRecognitionActive = false
     @State private var currentGesture: DetectedGesture?
     @State private var recentGestures: [DetectedGesture] = []
     @State private var handTrackingPoints: [Point3D] = []
     @State private var stats = GestureRecognizingStats()
-    
+
     @State private var showingPermissionAlert = false
     @State private var cameraPermissionGranted = false
-    
+    @State private var showModelNotTrainedBanner = false
+
+    private var isModelTrained: Bool {
+        guard let path = appSettings.modelConfig.modelPath else { return false }
+        return FileManager.default.fileExists(atPath: path)
+    }
+
     var body: some View {
         NavigationView {
             VStack {
+                // Model not trained banner
+                if showModelNotTrainedBanner {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
+                        Text("No trained model found. Go to Training to train the model first.")
+                            .font(.caption)
+                            .foregroundColor(.primary)
+                        Spacer()
+                        Button {
+                            showModelNotTrainedBanner = false
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(10)
+                    .background(Color.orange.opacity(0.15))
+                    .cornerRadius(8)
+                    .padding(.horizontal)
+                }
+
                 // Camera Preview Section
                 CameraPreviewView(
                     handTrackingPoints: $handTrackingPoints,
@@ -107,6 +137,8 @@ struct CameraView: View {
         .onAppear {
             checkCameraPermission()
             setupGestureCallbacks()
+            appSettings.updateModelConfig()
+            showModelNotTrainedBanner = !isModelTrained
         }
         .alert("Camera Permission Required", isPresented: $showingPermissionAlert) {
             Button("Settings") {
@@ -129,6 +161,10 @@ struct CameraView: View {
     }
     
     private func startRecognition() {
+        guard isModelTrained else {
+            showModelNotTrainedBanner = true
+            return
+        }
         Task {
             do {
                 try await gestureRecognizer.recognizer.start()
@@ -136,7 +172,9 @@ struct CameraView: View {
                     isRecognitionActive = true
                 }
             } catch {
-                print("Failed to start recognition: \(error)")
+                await MainActor.run {
+                    print("Failed to start recognition: \(error)")
+                }
             }
         }
     }

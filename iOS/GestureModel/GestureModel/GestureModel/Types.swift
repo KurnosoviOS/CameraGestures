@@ -14,7 +14,7 @@ public struct GestureModelConfig {
     
     public init(
         modelPath: String? = nil,
-        backendType: BackendType = .coreML,
+        backendType: BackendType = .tensorFlow,
         predictionThreshold: Float = 0.7,
         maxPredictions: Int = 5,
         enableTemporal: Bool = true,
@@ -33,14 +33,12 @@ public struct GestureModelConfig {
 
 /// Backend types for gesture recognition
 public enum BackendType: String, CaseIterable {
-    case coreML = "coreml"
-    case tensorFlow = "tensorflow" 
+    case tensorFlow = "tensorflow"
     case mock = "mock"
     
     public var displayName: String {
         switch self {
-        case .coreML: return "Core ML"
-        case .tensorFlow: return "TensorFlow"
+        case .tensorFlow: return "TensorFlow Lite"
         case .mock: return "Mock Backend"
         }
     }
@@ -51,6 +49,7 @@ public enum BackendType: String, CaseIterable {
 /// Errors that can occur in GestureModel
 public enum GestureModelError: Error {
     case modelNotLoaded
+    case modelNotDownloaded
     case invalidModelPath
     case invalidInput
     case predictionFailed
@@ -62,6 +61,8 @@ public enum GestureModelError: Error {
         switch self {
         case .modelNotLoaded:
             return "Model not loaded"
+        case .modelNotDownloaded:
+            return "No model available. Use 'Update Model' in the Training tab to download one from the server."
         case .invalidModelPath:
             return "Invalid model path"
         case .invalidInput:

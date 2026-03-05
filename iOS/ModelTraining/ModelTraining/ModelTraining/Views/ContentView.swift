@@ -91,21 +91,18 @@ struct ContentView: View {
     }
     
     private func handleGestureDetection(_ gesture: DetectedGesture) {
-        // Handle gesture detection based on current mode
         if trainingDataManager.isCollecting,
-           let gestureType = trainingDataManager.currentGestureType {
-            
-            // Add to training data
+           let gestureId = trainingDataManager.currentGestureId {
+
             let example = TrainingExample(
                 handfilm: gesture.handfilm,
-                gestureType: gestureType,
+                gestureId: gestureId,
                 userId: "current_user",
                 sessionId: UUID().uuidString
             )
-            
+
             trainingDataManager.addTrainingExample(example)
-            
-            // Provide haptic feedback
+
             if appSettings.enableHapticFeedback {
                 let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
                 impactFeedback.impactOccurred()
@@ -140,5 +137,6 @@ struct ContentView_Previews: PreviewProvider {
             .environmentObject(GestureRecognizerWrapper(recognizer: HandGestureRecognizing()))
             .environmentObject(TrainingDataManager())
             .environmentObject(AppSettings())
+            .environmentObject(GestureRegistry())
     }
 }

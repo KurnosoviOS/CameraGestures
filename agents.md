@@ -17,17 +17,33 @@ The project is designed with modularity and interchangeability in mind, allowing
 
 ## System Architecture
 
-The system consists of four interconnected modules that work together to provide end-to-end gesture recognition:
+The system consists of five interconnected modules that work together to provide end-to-end gesture recognition:
 
 ```
 Camera Input → HandsRecognizing → GestureModel → Application Output
-                     ↓               ↓
+                     ↓                  ↓
                 Training Data → ModelTraining
+                     ↑
+              HandGestureTypes (shared data types, all modules depend on this)
 ```
 
 ## Module Descriptions
 
-### 1. HandsRecognizing Module
+### 1. HandGestureTypes Module
+**Purpose**: Shared data type definitions used by all other modules.
+
+**Responsibilities**:
+- Define core data structures: `Point3D`, `HandShot`, `HandFilm`, `GesturePrediction`
+- Define the dynamic gesture definition type via `GestureDefinition` struct
+- Manage the runtime gesture list via `GestureRegistry` (JSON-persisted)
+- Define training structures: `TrainingExample`, `TrainingDataset`
+- Define evaluation structures: `ModelMetrics`
+- Serve as the single source of truth for inter-module data contracts
+
+**Implementation Language**: Swift (iOS); C++ equivalent planned for cross-platform
+**Platform Support**: iOS (current); Cross-platform (planned)
+
+### 2. HandsRecognizing Module
 **Purpose**: Real-time hand detection and coordinate extraction from camera input.
 
 **Responsibilities**:
@@ -35,30 +51,33 @@ Camera Input → HandsRecognizing → GestureModel → Application Output
 - Detect and track hand landmarks using MediaPipe Hands
 - Extract 21-keypoint hand skeleton coordinates
 - Generate timestamped sequences of hand positions
-- Output structured handshot and handfilm data
+- Output structured `HandShot` and `HandFilm` data
 
-**Technology**: MediaPipe Hands (Google)
-**Implementation Language**: C++
-**Platform Support**: Cross-platform (Windows, macOS, iOS, Android)
+**Technology**: MediaPipe Hands (Google) — `MediaPipeTasksVision` on iOS
+**Implementation Language**: Swift (iOS); C++ (cross-platform, planned)
+**Platform Support**: iOS (current); Cross-platform (planned)
 
-### 2. GestureModel Module
+### 3. GestureModel Module
 **Purpose**: Neural network abstraction layer for gesture classification.
 
 **Responsibilities**:
 - Provide unified API for different ML backends
-- Accept handfilm sequences as input
-- Output gesture predictions with confidence scores
+- Accept `HandFilm` sequences as input
+- Output `GesturePrediction` results with confidence scores
 - Support model loading/saving operations
 - Enable model switching without code changes
 
-**Backend Options** (design-time choice):
-- TensorFlow/Keras backend for deep learning approaches
-- Scikit-learn backend for traditional ML methods
+**Backend Options**:
+- CoreML backend (iOS, planned)
+- TensorFlow Lite backend (iOS, in progress — pod linked, inference stubbed)
+- Mock backend (iOS, working — heuristic predictions for development/testing)
+- TensorFlow/Keras backend (cross-platform, planned)
+- Scikit-learn backend (cross-platform, planned)
 
-**Implementation Language**: C++
-**Platform Support**: Cross-platform (Windows, macOS, iOS, Android)
+**Implementation Language**: Swift (iOS); C++ (cross-platform, planned)
+**Platform Support**: iOS (current); Cross-platform (planned)
 
-### 3. ModelTraining Module
+### 4. ModelTraining Module
 **Purpose**: Training pipeline for gesture recognition models.
 
 **Responsibilities**:
@@ -69,21 +88,74 @@ Camera Input → HandsRecognizing → GestureModel → Application Output
 - Enable manual correction of predictions
 - Support iterative model improvement
 
-**Implementation Language**: Swift (macOS/iOS application)
-**Platform Support**: macOS (future), iOS (development)
+**Implementation Language**: Swift (iOS SwiftUI application)
+**Platform Support**: iOS (current); macOS (planned)
 
-### 4. HandGestureRecognizing Module
+### 5. HandGestureRecognizing Module
 **Purpose**: Production-ready gesture recognition for external applications.
 
 **Responsibilities**:
-- Process live camera input through HandsRecognizing
-- Generate real-time gesture predictions via GestureModel
-- Provide simplified API for application integration
+- Orchestrate HandsRecognizing and GestureModel into a single lifecycle-managed pipeline
+- Process live camera input and emit `DetectedGesture` events
+- Provide simplified API for application integration (initialize → start → callbacks)
+- Expose performance statistics (latency, FPS, confidence, gesture counts)
 - Limit access to training functionality (read-only model usage)
 - Ensure consistent performance and reliability
 
-**Implementation Language**: C++ (exported as binary library)
-**Platform Support**: Cross-platform (Windows, macOS, iOS, Android)
+**Implementation Language**: Swift (iOS CocoaPod); C++ (cross-platform, planned)
+**Platform Support**: iOS (current); Cross-platform (planned)
+
+---
+
+## Platform Implementations
+
+### iOS Implementation (`/iOS`)
+
+The iOS implementation is a fully functional Swift realization of the architecture above, packaged as a CocoaPods workspace (`ModelTrainingApp.xcworkspace`). It serves as both the primary development environment and the reference implementation for the overall system design.
+
+**Location**: `/iOS`
+**Language**: Swift 5
+**Minimum Deployment Target**: iOS 15.0
+**Package Manager**: CocoaPods 1.16.2
+**Linkage**: Static frameworks (`use_frameworks! :linkage => :static`)
+
+#### Pod Structure and Dependency Graph
+
+```
+HandGestureTypes          (no dependencies)
+       ↑
+       ├── HandsRecognizingModule
+       │       + MediaPipeTasksVision 0.10.14
+       │         → MediaPipeTasksCommon 0.10.14
+       │
+       ├── GestureModelModule
+       │       + TensorFlowLiteSwift 2.13.0
+       │         → TensorFlowLiteC 2.13.0
+       │
+       └── HandGestureRecognizingFramework
+               (depends on all three above)
+                       ↑
+               ModelTrainingApp  ← iOS application target
+```
+
+#### Module Implementation Status
+
+| Module | Pod Name | Status |
+|---|---|---|
+| `HandGestureTypes` | `HandGestureTypes` | Complete — all types defined |
+| `HandsRecognizing` | `HandsRecognizingModule` | Working — real MediaPipe integration |
+| `GestureModel` | `GestureModelModule` | Partial — mock backend works; CoreML/TFLite stubbed |
+| `HandGestureRecognizing` | `HandGestureRecognizingFramework` | Working — orchestration and callbacks functional |
+| `ModelTraining` | App target | Partial — UI complete; persistent storage and real training stubbed |
+
+#### Key Implementation Notes
+
+- **MediaPipe integration is real**: `HandsRecognizing` calls `HandLandmarker.detectAsync()` with live `AVCaptureSession` frames and converts results to `HandShot` structs.
+- **ML backends are currently stubbed**: `GestureModel` CoreML and TensorFlow Lite code paths exist but return mock data pending real model integration. The mock backend returns empty predictions (no heuristics).
+- **Training pipeline is incomplete end-to-end**: the `ModelTraining` UI allows data collection and labeling, but persistent storage and actual model training are not yet implemented.
+- **Gesture set is dynamic**: gestures are defined at runtime as `GestureDefinition` values (name + description + slug ID) managed by `GestureRegistry`. The registry persists to `<AppSupport>/gestures.json`. There is no longer a fixed compile-time enum. The ModelTrainingApp provides an "Add Gesture" sheet (accessible from the Training and Gestures tabs) to define new gestures at runtime.
+
+---
 
 ## Glossary
 
@@ -93,6 +165,7 @@ Camera Input → HandsRecognizing → GestureModel → Application Output
 - **Dynamic Gesture**: A hand movement pattern that unfolds over time, requiring temporal analysis for recognition
 
 ### Module Names
+- **HandGestureTypes**: The shared types module defining all data structures and contracts used across modules
 - **HandsRecognizing**: The computer vision module responsible for hand detection and coordinate extraction
 - **GestureModel**: The machine learning abstraction layer that classifies gestures from handfilm data
 - **ModelTraining**: The training pipeline module for developing and refining gesture recognition models
@@ -102,12 +175,18 @@ Camera Input → HandsRecognizing → GestureModel → Application Output
 - **Landmark**: Individual coordinate points (x, y, z) representing specific anatomical features of the hand
 - **Keypoint**: Synonym for landmark, referring to the 21 tracked points on each hand
 - **Temporal Sequence**: Time-ordered data representing how hand positions change over the duration of a gesture
-- **Model Backend**: The underlying machine learning framework (TensorFlow/Keras or Scikit-learn)
+- **Model Backend**: The underlying machine learning framework (CoreML, TensorFlow Lite, or mock on iOS; TensorFlow/Keras or Scikit-learn on cross-platform)
 - **Confidence Score**: Numerical value indicating the model's certainty about a gesture prediction
+- **Mock Backend**: A substitute for a real ML model used during development and testing; currently returns empty predictions until a real model is trained
+- **GestureDefinition**: A runtime struct holding a gesture's slug ID, display name, and description — replaces the former `GestureType` enum
+- **GestureRegistry**: An `ObservableObject` that manages the list of `GestureDefinition` values and persists them as JSON on disk
 
 ### Data Structures
-- **Coordinate Triplet**: (x, y, z) position data for each hand landmark
+- **Point3D**: (x, y, z) position data for a single hand landmark
+- **Coordinate Triplet**: Synonym for Point3D
 - **Timestamp**: Time marker associated with each handshot for temporal analysis
-- **Gesture Label**: Classification identifier assigned to recognized gesture patterns
-- **Training Dataset**: Collection of labeled handfilms used for model development
-
+- **Gesture Label**: Classification identifier assigned to recognized gesture patterns (a `GestureDefinition.id` string slug)
+- **Training Dataset**: Collection of labeled handfilms used for model development (`TrainingDataset` type)
+- **TrainingExample**: A single labeled `HandFilm` paired with a gesture ID string (`gestureId`)
+- **ModelMetrics**: Evaluation results including accuracy, precision, recall, F1-score, confusion matrix, and training time
+- **DetectedGesture**: A recognized result bundled with its handfilm, handedness, timestamp, and processing latency

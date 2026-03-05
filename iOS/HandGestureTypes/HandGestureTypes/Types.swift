@@ -86,32 +86,19 @@ public struct GesturePrediction {
 
 // MARK: - Gesture Types
 
-/// Known gesture types
-public enum GestureType: String, CaseIterable {
-    case openHand = "open_hand"
-    case closedFist = "closed_fist"
-    case pointing = "pointing"
-    case peace = "peace"
-    case wave = "wave"
-    case grab = "grab"
-    case swipeLeft = "swipe_left"
-    case swipeRight = "swipe_right"
-    case thumbsUp = "thumbs_up"
-    case thumbsDown = "thumbs_down"
-    
-    public var displayName: String {
-        switch self {
-        case .openHand: return "Open Hand"
-        case .closedFist: return "Closed Fist"
-        case .pointing: return "Pointing"
-        case .peace: return "Peace Sign"
-        case .wave: return "Wave"
-        case .grab: return "Grab"
-        case .swipeLeft: return "Swipe Left"
-        case .swipeRight: return "Swipe Right"
-        case .thumbsUp: return "Thumbs Up"
-        case .thumbsDown: return "Thumbs Down"
-        }
+/// A user-defined gesture with a name and description
+public struct GestureDefinition: Codable, Identifiable, Equatable {
+    /// Slug identifier derived from the name (e.g. "thumbs_up")
+    public let id: String
+    /// Human-readable display name (e.g. "Thumbs Up")
+    public let name: String
+    /// Description of how to perform this gesture
+    public let description: String
+
+    public init(id: String, name: String, description: String) {
+        self.id = id
+        self.name = name
+        self.description = description
     }
 }
 
@@ -120,14 +107,15 @@ public enum GestureType: String, CaseIterable {
 /// Training example for gesture recognition
 public struct TrainingExample {
     public let handfilm: HandFilm
-    public let gestureType: GestureType
+    /// ID of the gesture being demonstrated (matches `GestureDefinition.id`)
+    public let gestureId: String
     public let userId: String?
     public let sessionId: String
     public let timestamp: TimeInterval
     
-    public init(handfilm: HandFilm, gestureType: GestureType, userId: String? = nil, sessionId: String) {
+    public init(handfilm: HandFilm, gestureId: String, userId: String? = nil, sessionId: String) {
         self.handfilm = handfilm
-        self.gestureType = gestureType
+        self.gestureId = gestureId
         self.userId = userId
         self.sessionId = sessionId
         self.timestamp = Date().timeIntervalSince1970
@@ -149,9 +137,10 @@ public struct TrainingDataset {
     public mutating func addExample(_ example: TrainingExample) {
         examples.append(example)
     }
-    
-    public var gestureCount: [GestureType: Int] {
-        return Dictionary(grouping: examples) { $0.gestureType }
+
+    /// Number of examples recorded per gesture ID
+    public var gestureCount: [String: Int] {
+        return Dictionary(grouping: examples) { $0.gestureId }
             .mapValues { $0.count }
     }
 }
