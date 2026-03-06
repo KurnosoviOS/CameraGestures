@@ -11,7 +11,6 @@ struct TrainingView: View {
     @EnvironmentObject var gestureRegistry: GestureRegistry
     @EnvironmentObject var apiClient: GestureModelAPIClient
 
-    @State private var selectedGesture: GestureDefinition?
     @State private var isCollecting = false
     @State private var collectionProgress: Double = 0.0
     @State private var targetSamples = 20
@@ -68,16 +67,16 @@ struct TrainingView: View {
             }
         }
         .onAppear {
-            if selectedGesture == nil {
-                selectedGesture = gestureRegistry.gestures.first
+            if trainingDataManager.selectedGesture == nil {
+                trainingDataManager.selectedGesture = gestureRegistry.gestures.first
             }
             setupTrainingCallbacks()
         }
         .onChange(of: gestureRegistry.gestures) { gestures in
-            if let current = selectedGesture, !gestures.contains(current) {
-                selectedGesture = gestures.first
-            } else if selectedGesture == nil {
-                selectedGesture = gestures.first
+            if let current = trainingDataManager.selectedGesture, !gestures.contains(current) {
+                trainingDataManager.selectedGesture = gestures.first
+            } else if trainingDataManager.selectedGesture == nil {
+                trainingDataManager.selectedGesture = gestures.first
             }
         }
         .sheet(isPresented: $showingAddGestureSheet) {
@@ -186,10 +185,10 @@ struct TrainingView: View {
                         ForEach(gestureRegistry.gestures) { gesture in
                             GestureSelectionCard(
                                 gesture: gesture,
-                                isSelected: gesture == selectedGesture,
+                                isSelected: gesture == trainingDataManager.selectedGesture,
                                 sampleCount: getSampleCount(for: gesture)
                             ) {
-                                selectedGesture = gesture
+                                trainingDataManager.selectedGesture = gesture
                             }
                         }
                     }
@@ -202,7 +201,7 @@ struct TrainingView: View {
     private var collectionProgressSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Collecting: \(selectedGesture?.name ?? "")")
+                Text("Collecting: \(trainingDataManager.selectedGesture?.name ?? "")")
                     .font(.headline)
 
                 Spacer()
@@ -241,7 +240,7 @@ struct TrainingView: View {
                     .background(Color.red)
                     .cornerRadius(8)
                 }
-                .disabled(trainingDataManager.currentDataset == nil || selectedGesture == nil)
+                .disabled(trainingDataManager.currentDataset == nil || trainingDataManager.selectedGesture == nil)
 
                 HStack {
                     Text("Target Samples:")
@@ -580,7 +579,7 @@ struct TrainingView: View {
     }
 
     private func startCollection() {
-        guard let gesture = selectedGesture else { return }
+        guard let gesture = trainingDataManager.selectedGesture else { return }
         isCollecting = true
         currentSamples = 0
         collectionProgress = 0.0
@@ -715,7 +714,7 @@ struct TrainingView: View {
 
     private func handleTrainingGesture(_ gesture: DetectedGesture) {
         guard trainingDataManager.isCollecting,
-              let selected = selectedGesture,
+              let selected = trainingDataManager.selectedGesture,
               trainingDataManager.currentGestureId == selected.id else { return }
 
         let example = TrainingExample(

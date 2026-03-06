@@ -44,6 +44,13 @@ class TrainingDataManager: ObservableObject {
     @Published var trainingState: TrainingState = .idle
     @Published var uploadState: UploadState = .idle
 
+    /// Currently selected gesture for training (shared between TrainingView and CameraView).
+    @Published var selectedGesture: GestureDefinition?
+
+    /// Examples collected locally and not yet sent to the server.
+    @Published var pendingExamples: [TrainingExample] = []
+    @Published var isSendingToServer = false
+
     weak var apiClient: GestureModelAPIClient?
 
     // MARK: - Data Collection
@@ -58,29 +65,41 @@ class TrainingDataManager: ObservableObject {
         currentGestureId = nil
     }
 
+    /// Add an example to local collections. Does NOT auto-upload.
     func addTrainingExample(_ example: TrainingExample) {
         trainingExamples.append(example)
-        // Keep currentDataset in sync
+        pendingExamples.append(example)
         if currentDataset != nil {
             currentDataset?.addExample(example)
         }
         objectWillChange.send()
+    }
 
-        // Fire-and-forget upload to server (currently just prints to console)
-        guard let client = apiClient else { return }
+    /// Upload all pending examples to the server (currently mocked).
+    func sendPendingToServer() {
+        guard !pendingExamples.isEmpty, !isSendingToServer, let client = apiClient else { return }
+        isSendingToServer = true
         uploadState = .uploading
+        let batch = pendingExamples
+        pendingExamples = []
         Task.detached { [weak self, weak client] in
-            guard let self, let client else { return }
-            do {
-                let response = try await client.uploadExample(example)
-                await MainActor.run {
-                    self.uploadState = .uploaded(total: response.totalForGesture)
+            guard let client else { return }
+            var lastTotal = 0
+            for example in batch {
+                do {
+                    let response = try await client.uploadExample(example)
+                    lastTotal = response.totalForGesture
+                } catch {
+                    await MainActor.run {
+                        self?.uploadState = .failed(error.localizedDescription)
+                        self?.isSendingToServer = false
+                    }
+                    return
                 }
-            } catch {
-                await MainActor.run {
-                    self.uploadState = .failed(error.localizedDescription)
-                    print("[TrainingDataManager] Upload failed: \(error)")
-                }
+            }
+            await MainActor.run {
+                self?.uploadState = .uploaded(total: lastTotal)
+                self?.isSendingToServer = false
             }
         }
     }
@@ -221,6 +240,131 @@ class GestureRecognizerWrapper: ObservableObject {
 
     init(recognizer: HandGestureRecognizing) {
         self.recognizer = recognizer
+    }
+}
+
+// MARK: - Training Series Coordinator
+
+/// Drives a repeating series of HandFilm captures for training data collection.
+/// Each iteration: countdown → recording window → pause → repeat.
+/// Uses HandsRecognizing directly, bypassing gesture classification entirely.
+@MainActor
+class TrainingSeriesCoordinator: ObservableObject {
+
+    // MARK: - Configurable timing
+    var captureWindow: TimeInterval = 1.0
+    var pauseInterval: TimeInterval = 5.0
+    var countdownDuration: Int = 3
+
+    // MARK: - Capture phase
+    enum Phase: Equatable {
+        case idle
+        case countdown(remaining: Int)
+        case recording
+        case pause(remaining: Int)
+    }
+
+    @Published var phase: Phase = .idle
+    @Published var capturedCount: Int = 0
+    @Published var handTrackingPoints: [Point3D] = []
+
+    private var handsRecognizer: HandsRecognizing?
+    private var seriesTask: Task<Void, Never>?
+    private var latestFilm = HandFilm()
+    private var filmReady = false
+    private var onFilmCaptured: ((HandFilm) -> Void)?
+
+    var isRunning: Bool { phase != .idle }
+
+    // MARK: - Start / Stop
+
+    func start(captureWindow: TimeInterval, pauseInterval: TimeInterval, onFilmCaptured: @escaping (HandFilm) -> Void) {
+        stop()
+        self.captureWindow = captureWindow
+        self.pauseInterval = pauseInterval
+        self.onFilmCaptured = onFilmCaptured
+        capturedCount = 0
+
+        let recognizer = HandsRecognizing()
+        handsRecognizer = recognizer
+
+        do {
+            try recognizer.initialize(config: HandsRecognizingConfig(
+                handfilmMaxDuration: captureWindow
+            ))
+        } catch {
+            print("[TrainingSeriesCoordinator] initialize error: \(error)")
+            return
+        }
+
+        recognizer.handshotCallback = { [weak self] handshot in
+            DispatchQueue.main.async {
+                self?.handTrackingPoints = handshot.landmarks
+            }
+        }
+        recognizer.handfilmCallback = { [weak self] film in
+            DispatchQueue.main.async {
+                self?.latestFilm = film
+                self?.filmReady = true
+            }
+        }
+
+        do {
+            try recognizer.start()
+        } catch {
+            print("[TrainingSeriesCoordinator] start error: \(error)")
+            handsRecognizer = nil
+            return
+        }
+
+        seriesTask = Task { await self.runLoop() }
+    }
+
+    func stop() {
+        seriesTask?.cancel()
+        seriesTask = nil
+        handsRecognizer?.stop()
+        handsRecognizer = nil
+        phase = .idle
+        handTrackingPoints = []
+    }
+
+    // MARK: - Series Loop
+
+    private func runLoop() async {
+        while !Task.isCancelled {
+            // --- Countdown ---
+            for remaining in stride(from: countdownDuration, through: 1, by: -1) {
+                guard !Task.isCancelled else { return }
+                phase = .countdown(remaining: remaining)
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            guard !Task.isCancelled else { return }
+
+            // --- Recording ---
+            phase = .recording
+            filmReady = false
+
+            let deadline = Date().addingTimeInterval(captureWindow + 0.5)
+            while !filmReady && Date() < deadline && !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000) // poll every 100ms
+            }
+            guard !Task.isCancelled else { return }
+
+            if filmReady {
+                capturedCount += 1
+                onFilmCaptured?(latestFilm)
+            }
+
+            // --- Pause ---
+            let pauseSecs = Int(pauseInterval)
+            for remaining in stride(from: pauseSecs, through: 1, by: -1) {
+                guard !Task.isCancelled else { return }
+                phase = .pause(remaining: remaining)
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+        phase = .idle
     }
 }
 
