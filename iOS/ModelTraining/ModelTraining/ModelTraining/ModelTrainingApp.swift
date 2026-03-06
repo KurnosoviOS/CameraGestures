@@ -14,6 +14,7 @@ struct ModelTrainingApp: App {
     @StateObject private var trainingDataManager = TrainingDataManager()
     @StateObject private var appSettings = AppSettings()
     @StateObject private var gestureRegistry = GestureRegistry()
+    @StateObject private var apiClient = GestureModelAPIClient()
 
     // MARK: - Scene Configuration
 
@@ -24,7 +25,11 @@ struct ModelTrainingApp: App {
                 .environmentObject(trainingDataManager)
                 .environmentObject(appSettings)
                 .environmentObject(gestureRegistry)
+                .environmentObject(apiClient)
                 .preferredColorScheme(appSettings.colorScheme)
+                .onAppear {
+                    trainingDataManager.apiClient = apiClient
+                }
         }
     }
 }
@@ -37,6 +42,9 @@ class TrainingDataManager: ObservableObject {
     @Published var isCollecting = false
     @Published var currentGestureId: String?
     @Published var trainingState: TrainingState = .idle
+    @Published var uploadState: UploadState = .idle
+
+    weak var apiClient: GestureModelAPIClient?
 
     // MARK: - Data Collection
 
@@ -57,6 +65,24 @@ class TrainingDataManager: ObservableObject {
             currentDataset?.addExample(example)
         }
         objectWillChange.send()
+
+        // Fire-and-forget upload to server (currently just prints to console)
+        guard let client = apiClient else { return }
+        uploadState = .uploading
+        Task.detached { [weak self, weak client] in
+            guard let self, let client else { return }
+            do {
+                let response = try await client.uploadExample(example)
+                await MainActor.run {
+                    self.uploadState = .uploaded(total: response.totalForGesture)
+                }
+            } catch {
+                await MainActor.run {
+                    self.uploadState = .failed(error.localizedDescription)
+                    print("[TrainingDataManager] Upload failed: \(error)")
+                }
+            }
+        }
     }
 
     func createNewDataset(name: String) {
@@ -164,9 +190,9 @@ class AppSettings: ObservableObject {
     }
 
     func updateModelConfig() {
-        let compiledModelURL = defaultCompiledModelURL()
-        let modelPath = FileManager.default.fileExists(atPath: compiledModelURL.path)
-            ? compiledModelURL.path
+        let tfliteURL = defaultTFLiteModelURL()
+        let modelPath = FileManager.default.fileExists(atPath: tfliteURL.path)
+            ? tfliteURL.path
             : nil
         modelConfig = GestureModelConfig(
             modelPath: modelPath,
@@ -176,9 +202,9 @@ class AppSettings: ObservableObject {
         )
     }
 
-    private func defaultCompiledModelURL() -> URL {
+    func defaultTFLiteModelURL() -> URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("GestureModel/GestureModel.mlmodelc", isDirectory: true)
+            .appendingPathComponent("GestureModel/gesture_model.tflite")
     }
 }
 

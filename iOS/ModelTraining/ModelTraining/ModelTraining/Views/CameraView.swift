@@ -32,7 +32,7 @@ struct CameraView: View {
                     HStack(spacing: 8) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundColor(.orange)
-                        Text("No trained model found. Go to Training to train the model first.")
+                        Text("No model downloaded yet. Go to Training → Update Model.")
                             .font(.caption)
                             .foregroundColor(.primary)
                         Spacer()

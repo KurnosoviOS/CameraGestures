@@ -9,6 +9,7 @@ struct TrainingView: View {
     @EnvironmentObject var trainingDataManager: TrainingDataManager
     @EnvironmentObject var appSettings: AppSettings
     @EnvironmentObject var gestureRegistry: GestureRegistry
+    @EnvironmentObject var apiClient: GestureModelAPIClient
 
     @State private var selectedGesture: GestureDefinition?
     @State private var isCollecting = false
@@ -22,6 +23,14 @@ struct TrainingView: View {
     @State private var completedMetrics: ModelMetrics?
     @State private var trainingErrorMessage: String?
     @State private var showingTrainingError = false
+
+    // Server state
+    @State private var serverStatus: ModelStatusResponse?
+    @State private var isPollingStatus = false
+    @State private var isDownloadingModel = false
+    @State private var serverActionError: String?
+    @State private var showingServerError = false
+    @State private var statusPollingTask: Task<Void, Never>?
 
     var body: some View {
         NavigationView {
@@ -37,6 +46,7 @@ struct TrainingView: View {
                     collectionControlsSection
                     trainingDataSummarySection
                     trainingControlsSection
+                    serverControlsSection
                 }
                 .padding()
             }
@@ -93,6 +103,18 @@ struct TrainingView: View {
             Button("OK", role: .cancel) { }
         } message: {
             Text(trainingErrorMessage ?? "An unknown error occurred.")
+        }
+        .alert("Server Error", isPresented: $showingServerError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(serverActionError ?? "An unknown error occurred.")
+        }
+        .onDisappear {
+            statusPollingTask?.cancel()
+            statusPollingTask = nil
+        }
+        .onAppear {
+            refreshServerStatus()
         }
     }
 
@@ -396,6 +418,144 @@ struct TrainingView: View {
         }
     }
 
+    // MARK: - Server Controls Section
+
+    private var serverControlsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Server Training")
+                    .font(.headline)
+                Spacer()
+                if let status = serverStatus {
+                    ServerStatusBadge(status: status.status)
+                }
+            }
+
+            // Server URL
+            HStack(spacing: 8) {
+                Image(systemName: "network")
+                    .foregroundColor(.secondary)
+                    .frame(width: 20)
+                Text(apiClient.baseURL.absoluteString)
+                    .font(.caption.monospaced())
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            // Upload state indicator
+            uploadStatusRow
+
+            // Action buttons
+            HStack(spacing: 12) {
+                Button(action: triggerServerTraining) {
+                    Label("Train on Server", systemImage: "brain.head.profile")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.blue)
+                .disabled(isPollingStatus)
+
+                Button(action: downloadModelFromServer) {
+                    if isDownloadingModel {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        Label("Update Model", systemImage: "arrow.down.circle")
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
+                .disabled(isDownloadingModel)
+            }
+
+            // Training progress / status details
+            if let status = serverStatus {
+                serverStatusDetailView(status: status)
+            }
+        }
+        .padding()
+        .background(Color.purple.opacity(0.06))
+        .cornerRadius(8)
+    }
+
+    @ViewBuilder
+    private var uploadStatusRow: some View {
+        switch trainingDataManager.uploadState {
+        case .idle:
+            EmptyView()
+        case .uploading:
+            HStack(spacing: 6) {
+                ProgressView()
+                    .scaleEffect(0.75)
+                Text("Uploading example…")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        case .uploaded(let total):
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.green)
+                    .font(.caption)
+                Text("Uploaded — server has \(total) example(s) for this gesture")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        case .failed(let msg):
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .foregroundColor(.orange)
+                    .font(.caption)
+                Text("Upload failed: \(msg)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func serverStatusDetailView(status: ModelStatusResponse) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if status.status == "training" {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .scaleEffect(0.85)
+                    Text("Training in progress…")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            if let accuracy = status.accuracy {
+                HStack {
+                    Text("Server accuracy:")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text(String(format: "%.1f%%", accuracy * 100))
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundColor(.green)
+                }
+            }
+
+            if status.status == "ready", !status.gestureIds.isEmpty {
+                Text("Gestures: \(status.gestureIds.joined(separator: ", "))")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            }
+
+            if let err = status.error {
+                Text("Error: \(err)")
+                    .font(.caption2)
+                    .foregroundColor(.red)
+                    .lineLimit(3)
+            }
+        }
+    }
+
     // MARK: - Computed Properties
 
     private var canStartTraining: Bool {
@@ -485,6 +645,74 @@ struct TrainingView: View {
         }
     }
 
+    // MARK: - Server Actions
+
+    private func refreshServerStatus() {
+        Task {
+            do {
+                let status = try await apiClient.fetchModelStatus()
+                await MainActor.run { serverStatus = status }
+
+                if status.status == "training" {
+                    startPollingStatus()
+                }
+            } catch {
+                print("[TrainingView] fetchModelStatus failed: \(error)")
+            }
+        }
+    }
+
+    private func triggerServerTraining() {
+        Task {
+            do {
+                let job = try await apiClient.triggerTraining()
+                print("[TrainingView] Training job started: \(job.jobId)")
+                startPollingStatus()
+            } catch {
+                await MainActor.run {
+                    serverActionError = error.localizedDescription
+                    showingServerError = true
+                }
+            }
+        }
+    }
+
+    private func downloadModelFromServer() {
+        isDownloadingModel = true
+        Task {
+            do {
+                let url = try await apiClient.downloadModel()
+                print("[TrainingView] Model downloaded to: \(url.path)")
+                appSettings.updateModelConfig()
+            } catch {
+                await MainActor.run {
+                    serverActionError = error.localizedDescription
+                    showingServerError = true
+                }
+            }
+            await MainActor.run { isDownloadingModel = false }
+        }
+    }
+
+    private func startPollingStatus() {
+        statusPollingTask?.cancel()
+        isPollingStatus = true
+        statusPollingTask = Task {
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 3_000_000_000)
+                    guard !Task.isCancelled else { break }
+                    let status = try await apiClient.fetchModelStatus()
+                    await MainActor.run { serverStatus = status }
+                    if status.status != "training" { break }
+                } catch {
+                    break
+                }
+            }
+            await MainActor.run { isPollingStatus = false }
+        }
+    }
+
     private func handleTrainingGesture(_ gesture: DetectedGesture) {
         guard trainingDataManager.isCollecting,
               let selected = selectedGesture,
@@ -510,6 +738,45 @@ struct TrainingView: View {
             let impactFeedback = UIImpactFeedbackGenerator(style: .light)
             impactFeedback.impactOccurred()
         }
+    }
+}
+
+// MARK: - Server Status Badge
+
+struct ServerStatusBadge: View {
+    let status: String
+
+    private var color: Color {
+        switch status {
+        case "ready": return .green
+        case "training": return .orange
+        case "failed": return .red
+        default: return .secondary
+        }
+    }
+
+    private var label: String {
+        switch status {
+        case "ready": return "Ready"
+        case "training": return "Training…"
+        case "failed": return "Failed"
+        default: return "Idle"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 7, height: 7)
+            Text(label)
+                .font(.caption)
+                .foregroundColor(color)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(color.opacity(0.12))
+        .clipShape(Capsule())
     }
 }
 
@@ -727,5 +994,6 @@ struct TrainingView_Previews: PreviewProvider {
             .environmentObject(TrainingDataManager())
             .environmentObject(AppSettings())
             .environmentObject(GestureRegistry())
+            .environmentObject(GestureModelAPIClient())
     }
 }
