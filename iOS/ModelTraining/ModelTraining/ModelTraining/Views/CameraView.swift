@@ -8,25 +8,51 @@ import HandGestureRecognizingFramework
 struct CameraView: View {
     @EnvironmentObject var gestureRecognizer: GestureRecognizerWrapper
     @EnvironmentObject var appSettings: AppSettings
+    @EnvironmentObject var trainingDataManager: TrainingDataManager
+    @EnvironmentObject var gestureRegistry: GestureRegistry
+    @EnvironmentObject var apiClient: GestureModelAPIClient
 
+    @StateObject private var seriesCoordinator = TrainingSeriesCoordinator()
+
+    // Recognition state
     @State private var isRecognitionActive = false
     @State private var currentGesture: DetectedGesture?
     @State private var recentGestures: [DetectedGesture] = []
-    @State private var handTrackingPoints: [Point3D] = []
+    @State private var recognitionHandPoints: [Point3D] = []
     @State private var stats = GestureRecognizingStats()
 
+    // Permissions & banners
     @State private var showingPermissionAlert = false
     @State private var cameraPermissionGranted = false
     @State private var showModelNotTrainedBanner = false
 
+    // Training series config
+    @State private var captureWindow: TimeInterval = 1.0
+    @State private var pauseInterval: TimeInterval = 5.0
+
+    // Which hand tracking points to show on the preview
+    private var displayPoints: [Point3D] {
+        seriesCoordinator.isRunning
+            ? seriesCoordinator.handTrackingPoints
+            : recognitionHandPoints
+    }
+
+    private var previewIsActive: Bool { isRecognitionActive || seriesCoordinator.isRunning }
+
     private var isModelTrained: Bool {
+#if DEBUG
+        //Test:
+        return true
+#else
+#error ("test")
+#endif
         guard let path = appSettings.modelConfig.modelPath else { return false }
         return FileManager.default.fileExists(atPath: path)
     }
 
     var body: some View {
         NavigationView {
-            VStack {
+            VStack(spacing: 0) {
                 // Model not trained banner
                 if showModelNotTrainedBanner {
                     HStack(spacing: 8) {
@@ -48,89 +74,55 @@ struct CameraView: View {
                     .background(Color.orange.opacity(0.15))
                     .cornerRadius(8)
                     .padding(.horizontal)
+                    .padding(.top, 4)
                 }
 
-                // Camera Preview Section
-                CameraPreviewView(
-                    handTrackingPoints: $handTrackingPoints,
-                    isActive: $isRecognitionActive
-                )
+                // Camera preview with capture overlay
+                ZStack {
+                    CameraPreviewView(
+                        handTrackingPoints: .constant(displayPoints),
+                        isActive: .constant(previewIsActive)
+                    )
+                    .cornerRadius(12)
+
+                    capturePhaseOverlay
+                }
                 .frame(maxHeight: 400)
-                .cornerRadius(12)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(isRecognitionActive ? Color.green : Color.gray, lineWidth: 2)
-                )
-                
-                // Current Gesture Display
-                if let currentGesture = currentGesture {
-                    CurrentGestureView(gesture: currentGesture)
-                        .padding()
-                        .background(Color.blue.opacity(0.1))
-                        .cornerRadius(8)
-                        .padding(.horizontal)
-                }
-                
-                // Controls
-                HStack(spacing: 20) {
-                    // Start/Stop Button
-                    Button(action: toggleRecognition) {
-                        HStack {
-                            Image(systemName: isRecognitionActive ? "stop.fill" : "play.fill")
-                            Text(isRecognitionActive ? "Stop" : "Start")
+                .padding(.horizontal)
+                .padding(.top, 8)
+
+                ScrollView {
+                    VStack(spacing: 12) {
+                        // Recognised gesture (prediction mode)
+                        if let currentGesture, !seriesCoordinator.isRunning {
+                            CurrentGestureView(gesture: currentGesture)
+                                .padding()
+                                .background(Color.blue.opacity(0.1))
+                                .cornerRadius(8)
                         }
-                        .foregroundColor(.white)
-                        .padding()
-                        .background(isRecognitionActive ? Color.red : Color.green)
-                        .cornerRadius(8)
-                    }
-                    .disabled(!cameraPermissionGranted)
-                    
-                    // Stats Button
-                    Button(action: {}) {
-                        HStack {
-                            Image(systemName: "chart.bar.fill")
-                            Text("Stats")
+
+                        // Controls row
+                        controlsSection
+
+                        // Recent gestures list (prediction mode)
+                        if !recentGestures.isEmpty && !seriesCoordinator.isRunning {
+                            recentGesturesSection
                         }
-                        .foregroundColor(.blue)
-                        .padding()
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.blue, lineWidth: 1)
-                        )
-                    }
-                }
-                .padding()
-                
-                // Recent Gestures List
-                if !recentGestures.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Recent Gestures")
-                            .font(.headline)
-                            .padding(.horizontal)
-                        
-                        ScrollView {
-                            LazyVStack(spacing: 4) {
-                                ForEach(recentGestures.reversed().indices, id: \.self) { index in
-                                    let gesture = recentGestures.reversed()[index]
-                                    RecentGestureRow(gesture: gesture)
-                                }
-                            }
+
+                        // Send to server (shown when there are pending examples)
+                        if !trainingDataManager.pendingExamples.isEmpty || trainingDataManager.isSendingToServer {
+                            sendToServerSection
                         }
-                        .frame(maxHeight: 150)
                     }
+                    .padding()
                 }
-                
-                Spacer()
             }
-            .navigationTitle("Live Recognition")
+            .navigationTitle("Camera")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Clear") {
-                        clearGestures()
-                    }
-                    .disabled(recentGestures.isEmpty)
+                    Button("Clear") { clearGestures() }
+                        .disabled(recentGestures.isEmpty)
                 }
             }
         }
@@ -139,27 +131,342 @@ struct CameraView: View {
             setupGestureCallbacks()
             appSettings.updateModelConfig()
             showModelNotTrainedBanner = !isModelTrained
+            if trainingDataManager.selectedGesture == nil {
+                trainingDataManager.selectedGesture = gestureRegistry.gestures.first
+            }
+            trainingDataManager.apiClient = apiClient
+        }
+        .onChange(of: gestureRegistry.gestures) { gestures in
+            if let current = trainingDataManager.selectedGesture, !gestures.contains(current) {
+                trainingDataManager.selectedGesture = gestures.first
+            } else if trainingDataManager.selectedGesture == nil {
+                trainingDataManager.selectedGesture = gestures.first
+            }
         }
         .alert("Camera Permission Required", isPresented: $showingPermissionAlert) {
-            Button("Settings") {
-                openAppSettings()
-            }
+            Button("Settings") { openAppSettings() }
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Please enable camera access in Settings to use gesture recognition.")
         }
-    }
-    
-    // MARK: - Actions
-    
-    private func toggleRecognition() {
-        if isRecognitionActive {
-            stopRecognition()
-        } else {
-            startRecognition()
+        .onDisappear {
+            seriesCoordinator.stop()
         }
     }
-    
+
+    // MARK: - Capture Phase Overlay
+
+    @ViewBuilder
+    private var capturePhaseOverlay: some View {
+        switch seriesCoordinator.phase {
+        case .idle:
+            EmptyView()
+
+        case .countdown(let remaining):
+            VStack(spacing: 6) {
+                Text("Get ready!")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.white)
+                Text("\(remaining)")
+                    .font(.system(size: 72, weight: .bold, design: .rounded))
+                    .foregroundColor(.yellow)
+            }
+            .padding(24)
+            .background(.black.opacity(0.55))
+            .cornerRadius(16)
+
+        case .recording:
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 12, height: 12)
+                    .opacity(recPulse ? 1 : 0.25)
+                    .animation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true), value: recPulse)
+                    .onAppear { recPulse = true }
+                    .onDisappear { recPulse = false }
+                Text("REC — Perform gesture")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.white)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+            .background(Color.red.opacity(0.75))
+            .cornerRadius(12)
+            .padding(.bottom, 12)
+            .frame(maxHeight: .infinity, alignment: .bottom)
+
+        case .pause(let remaining):
+            VStack(spacing: 4) {
+                Text("Next capture in")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.75))
+                Text("\(remaining)s")
+                    .font(.system(size: 40, weight: .semibold, design: .rounded))
+                    .foregroundColor(.white)
+                Text("Captured: \(seriesCoordinator.capturedCount)")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.75))
+            }
+            .padding(18)
+            .background(.black.opacity(0.55))
+            .cornerRadius(14)
+        }
+    }
+
+    @State private var recPulse = false
+
+    // MARK: - Controls Section
+
+    private var controlsSection: some View {
+        VStack(spacing: 10) {
+            // Gesture picker (always visible)
+            gesturePicker
+
+            if seriesCoordinator.isRunning {
+                // Running: show capture count + Stop button
+                HStack(spacing: 10) {
+                    Image(systemName: "film.stack")
+                        .foregroundColor(.blue)
+                    Text("Captured: \(seriesCoordinator.capturedCount)")
+                        .font(.subheadline.weight(.medium))
+                    Spacer()
+                    phasePill
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.blue.opacity(0.08))
+                .cornerRadius(10)
+
+                stopButton
+
+            } else if isRecognitionActive {
+                // Prediction running: Stop button only
+                stopButton
+
+            } else {
+                // Idle: timing config + both start buttons
+                timingConfig
+
+                HStack(spacing: 12) {
+                    startPredictionButton
+                    startTrainingButton
+                }
+            }
+        }
+    }
+
+    private var gesturePicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Training gesture")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            if gestureRegistry.gestures.isEmpty {
+                Text("No gestures defined — add them in the Training tab")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.vertical, 4)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(gestureRegistry.gestures) { gesture in
+                            let isSelected = trainingDataManager.selectedGesture == gesture
+                            Button {
+                                if !seriesCoordinator.isRunning {
+                                    trainingDataManager.selectedGesture = gesture
+                                }
+                            } label: {
+                                Text(gesture.name)
+                                    .font(.caption.weight(isSelected ? .semibold : .regular))
+                                    .foregroundColor(isSelected ? .white : .primary)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(isSelected ? Color.blue : Color.gray.opacity(0.15))
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(seriesCoordinator.isRunning)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var timingConfig: some View {
+        HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Capture")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                HStack(spacing: 4) {
+                    Text("\(Int(captureWindow))s")
+                        .font(.subheadline.weight(.medium))
+                        .frame(width: 28, alignment: .leading)
+                    Stepper("", value: $captureWindow, in: 1...5, step: 1)
+                        .labelsHidden()
+                }
+            }
+            Divider().frame(height: 32)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Pause")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                HStack(spacing: 4) {
+                    Text("\(Int(pauseInterval))s")
+                        .font(.subheadline.weight(.medium))
+                        .frame(width: 28, alignment: .leading)
+                    Stepper("", value: $pauseInterval, in: 2...15, step: 1)
+                        .labelsHidden()
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.gray.opacity(0.07))
+        .cornerRadius(10)
+    }
+
+    private var startPredictionButton: some View {
+        Button(action: startRecognition) {
+            HStack(spacing: 6) {
+                Image(systemName: "play.fill")
+                Text("Start Prediction")
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundColor(.white)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity)
+            .background(isModelTrained && cameraPermissionGranted ? Color.green : Color.gray)
+            .cornerRadius(10)
+        }
+        .disabled(!isModelTrained || !cameraPermissionGranted)
+    }
+
+    private var startTrainingButton: some View {
+        Button(action: startTrainingSeries) {
+            HStack(spacing: 6) {
+                Image(systemName: "record.circle")
+                Text("Start Training")
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundColor(.white)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity)
+            .background(canStartTraining ? Color.red : Color.gray)
+            .cornerRadius(10)
+        }
+        .disabled(!canStartTraining)
+    }
+
+    private var stopButton: some View {
+        Button(action: stopAll) {
+            HStack(spacing: 6) {
+                Image(systemName: "stop.fill")
+                Text("Stop")
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundColor(.white)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity)
+            .background(Color.orange)
+            .cornerRadius(10)
+        }
+    }
+
+    @ViewBuilder
+    private var phasePill: some View {
+        switch seriesCoordinator.phase {
+        case .countdown: Text("Countdown").font(.caption).foregroundColor(.orange)
+        case .recording: Text("Recording").font(.caption.weight(.semibold)).foregroundColor(.red)
+        case .pause:     Text("Pausing").font(.caption).foregroundColor(.secondary)
+        case .idle:      EmptyView()
+        }
+    }
+
+    // MARK: - Recent Gestures
+
+    private var recentGesturesSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Recent Gestures")
+                .font(.headline)
+
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    ForEach(recentGestures.reversed().indices, id: \.self) { index in
+                        RecentGestureRow(gesture: recentGestures.reversed()[index])
+                    }
+                }
+            }
+            .frame(maxHeight: 150)
+        }
+    }
+
+    // MARK: - Send to Server
+
+    private var sendToServerSection: some View {
+        VStack(spacing: 6) {
+            Button(action: { trainingDataManager.sendPendingToServer() }) {
+                HStack {
+                    if trainingDataManager.isSendingToServer {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .scaleEffect(0.8)
+                            .tint(.white)
+                    } else {
+                        Image(systemName: "arrow.up.circle.fill")
+                    }
+                    Text(trainingDataManager.isSendingToServer
+                         ? "Sending…"
+                         : "Send to Server (\(trainingDataManager.pendingExamples.count))")
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(.white)
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity)
+                .background(!trainingDataManager.pendingExamples.isEmpty && !trainingDataManager.isSendingToServer
+                             ? Color.blue : Color.gray)
+                .cornerRadius(10)
+            }
+            .disabled(trainingDataManager.pendingExamples.isEmpty || trainingDataManager.isSendingToServer)
+
+            uploadStatusRow
+        }
+    }
+
+    @ViewBuilder
+    private var uploadStatusRow: some View {
+        switch trainingDataManager.uploadState {
+        case .idle:
+            EmptyView()
+        case .uploading:
+            HStack(spacing: 6) {
+                ProgressView().scaleEffect(0.75)
+                Text("Uploading…").font(.caption).foregroundColor(.secondary)
+            }
+        case .uploaded(let total):
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill").foregroundColor(.green).font(.caption)
+                Text("Sent — server has \(total) example(s) for this gesture")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+        case .failed(let msg):
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.circle.fill").foregroundColor(.orange).font(.caption)
+                Text("Upload failed: \(msg)").font(.caption).foregroundColor(.secondary).lineLimit(2)
+            }
+        }
+    }
+
+    // MARK: - Computed Properties
+
+    private var canStartTraining: Bool {
+        cameraPermissionGranted && trainingDataManager.selectedGesture != nil
+    }
+
+    // MARK: - Actions
+
     private func startRecognition() {
         guard isModelTrained else {
             showModelNotTrainedBanner = true
@@ -168,72 +475,81 @@ struct CameraView: View {
         Task {
             do {
                 try await gestureRecognizer.recognizer.start()
-                await MainActor.run {
-                    isRecognitionActive = true
-                }
+                await MainActor.run { isRecognitionActive = true }
             } catch {
-                await MainActor.run {
-                    print("Failed to start recognition: \(error)")
-                }
+                print("Failed to start recognition: \(error)")
             }
         }
     }
-    
-    private func stopRecognition() {
-        gestureRecognizer.recognizer.stop()
-        isRecognitionActive = false
+
+    private func startTrainingSeries() {
+        guard let gesture = trainingDataManager.selectedGesture else { return }
+        trainingDataManager.startDataCollection(for: gesture)
+        seriesCoordinator.start(captureWindow: captureWindow, pauseInterval: pauseInterval) { film in
+            let example = TrainingExample(
+                handfilm: film,
+                gestureId: gesture.id,
+                userId: "current_user",
+                sessionId: UUID().uuidString
+            )
+            trainingDataManager.addTrainingExample(example)
+        }
     }
-    
+
+    private func stopAll() {
+        if isRecognitionActive {
+            gestureRecognizer.recognizer.stop()
+            isRecognitionActive = false
+        }
+        if seriesCoordinator.isRunning {
+            seriesCoordinator.stop()
+            trainingDataManager.stopDataCollection()
+        }
+    }
+
     private func clearGestures() {
         recentGestures.removeAll()
         currentGesture = nil
         gestureRecognizer.recognizer.clearHistory()
     }
-    
+
     // MARK: - Setup
-    
+
     private func setupGestureCallbacks() {
         gestureRecognizer.recognizer.gestureDetectionCallback = { gesture in
             DispatchQueue.main.async {
                 currentGesture = gesture
                 recentGestures.append(gesture)
-                
-                // Keep only recent gestures
-                if recentGestures.count > 50 {
-                    recentGestures.removeFirst()
-                }
+                if recentGestures.count > 50 { recentGestures.removeFirst() }
             }
         }
-        
+
         gestureRecognizer.recognizer.handTrackingUpdateCallback = { handshot in
             DispatchQueue.main.async {
-                handTrackingPoints = handshot.landmarks
+                recognitionHandPoints = handshot.landmarks
             }
         }
-        
-        // Update stats periodically
+
         Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
             if isRecognitionActive {
                 stats = gestureRecognizer.recognizer.getStatistics()
             }
         }
     }
-    
+
     private func checkCameraPermission() {
         Task {
             let permission = await HandsRecognizing.requestCameraPermission()
             await MainActor.run {
                 cameraPermissionGranted = permission
-                if !permission {
-                    showingPermissionAlert = true
-                }
+                if !permission { showingPermissionAlert = true }
             }
         }
     }
-    
+
     private func openAppSettings() {
-        if let settingsUrl = URL(string: UIApplication.openSettingsURLString) {
-            UIApplication.shared.open(settingsUrl)
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(url)
         }
     }
 }
