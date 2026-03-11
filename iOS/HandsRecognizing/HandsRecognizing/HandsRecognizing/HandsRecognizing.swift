@@ -80,14 +80,11 @@ public class HandsRecognizing: NSObject {
             throw HandsRecognizingError.cameraNotAvailable
         }
         
-        isRunning = true
         try startCameraCapture()
     }
     
     /// Stop hand tracking
     public func stop() {
-        guard isRunning else { return }
-        
         isRunning = false
         stopCameraCapture()
         
@@ -162,8 +159,11 @@ public class HandsRecognizing: NSObject {
             throw HandsRecognizingError.initializationFailed
         }
         
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             captureSession.startRunning()
+            DispatchQueue.main.async {
+                self?.isRunning = captureSession.isRunning
+            }
         }
     }
     
