@@ -74,9 +74,16 @@ public class HandsRecognizing: NSObject {
     public func start() throws {
         guard !isRunning else { return }
         
-        // Stub: Simulate camera permission check
+        // Distinguish between "not yet asked" and "denied/restricted"
+        // .notDetermined means the system prompt hasn't appeared yet — the session
+        // will silently produce no frames rather than throwing, so surface it explicitly.
         let cameraStatus = AVCaptureDevice.authorizationStatus(for: .video)
-        if cameraStatus != .authorized {
+        switch cameraStatus {
+        case .authorized:
+            break
+        case .notDetermined:
+            throw HandsRecognizingError.cameraPermissionNotDetermined
+        default:
             throw HandsRecognizingError.cameraNotAvailable
         }
         
@@ -117,7 +124,9 @@ public class HandsRecognizing: NSObject {
         
         // Configure session
         captureSession.beginConfiguration()
-        captureSession.sessionPreset = .high
+        
+        // TODO: check the difference between different levels of sessionPreset
+        captureSession.sessionPreset = .medium
         
         // Add camera input
         guard let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) else {
@@ -130,18 +139,14 @@ public class HandsRecognizing: NSObject {
         }
         captureSession.addInput(cameraInput)
         
-        // Add video output
+        // Add video output — configure settings before adding to session,
+        // and attach the delegate only after addOutput so the session owns the output first
         videoOutput = AVCaptureVideoDataOutput()
         guard let videoOutput = videoOutput else {
             throw HandsRecognizingError.initializationFailed
         }
         
         videoOutput.alwaysDiscardsLateVideoFrames = false
-        
-        processingQueue = DispatchQueue(label: "com.cameragestures.processing", qos: .userInitiated)
-        videoOutput.setSampleBufferDelegate(self, queue: processingQueue)
-        
-        // Configure video settings
         videoOutput.videoSettings = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
         ]
@@ -150,6 +155,10 @@ public class HandsRecognizing: NSObject {
             throw HandsRecognizingError.initializationFailed
         }
         captureSession.addOutput(videoOutput)
+        
+        // Set the delegate after the output is added to the session
+        processingQueue = DispatchQueue(label: "com.cameragestures.processing", qos: .userInitiated)
+        videoOutput.setSampleBufferDelegate(self, queue: processingQueue)
         
         captureSession.commitConfiguration()
     }
