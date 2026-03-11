@@ -5,6 +5,7 @@ import MediaPipeTasksVision
 /// Error codes for framework operations
 public enum HandsRecognizingError: Error {
     case cameraNotAvailable
+    case cameraPermissionNotDetermined
     case invalidConfiguration
     case initializationFailed
     case processingError
@@ -12,7 +13,9 @@ public enum HandsRecognizingError: Error {
     public var localizedDescription: String {
         switch self {
         case .cameraNotAvailable:
-            return "Camera not available"
+            return "Camera not available or permission denied"
+        case .cameraPermissionNotDetermined:
+            return "Camera permission not yet requested — call requestCameraPermission() first"
         case .invalidConfiguration:
             return "Invalid configuration"
         case .initializationFailed:
