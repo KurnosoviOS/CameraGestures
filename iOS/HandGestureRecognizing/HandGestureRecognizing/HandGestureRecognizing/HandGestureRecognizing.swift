@@ -184,6 +184,15 @@ public class HandGestureRecognizing {
     
     // MARK: - Configuration Updates
     
+    /// Load (or reload) the gesture model from a file path without restarting the recognizer.
+    /// Call this after downloading a new model from the server.
+    public func loadModel(from path: String, gestureIds: [String] = []) throws {
+        try gestureModel.loadModel(from: path)
+        if !gestureIds.isEmpty {
+            gestureModel.setSupportedGestures(gestureIds)
+        }
+    }
+
     /// Update configuration while running
     public func updateConfig(_ newConfig: HandGestureRecognizingConfig) throws {
         let wasRunning = isRunning
@@ -299,7 +308,10 @@ public class HandGestureRecognizing {
         
         do {
             // Get gesture predictions
+            print("<<--prediction-->>prediction start")
             let predictions = try await gestureModel.predictTopK(handfilm: handfilm, k: 3)
+            
+            print("<<--prediction-->>predictions: \(predictions)")
             
             // Process each prediction above threshold
             for prediction in predictions {

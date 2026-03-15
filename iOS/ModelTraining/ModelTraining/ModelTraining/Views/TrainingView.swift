@@ -680,8 +680,12 @@ struct TrainingView: View {
         Task {
             do {
                 let url = try await apiClient.downloadModel()
-                print("[TrainingView] Model downloaded to: \(url.path)")
                 appSettings.updateModelConfig()
+
+                let sidecarURL = url.deletingLastPathComponent().appendingPathComponent("gesture_ids.json")
+                let gestureIds = (try? JSONDecoder().decode([String].self, from: Data(contentsOf: sidecarURL))) ?? []
+
+                try gestureRecognizer.recognizer.loadModel(from: url.path, gestureIds: gestureIds)
             } catch {
                 await MainActor.run {
                     serverActionError = error.localizedDescription
