@@ -26,8 +26,10 @@ struct TrainingView: View {
     @State private var serverStatus: ModelStatusResponse?
     @State private var isPollingStatus = false
     @State private var isDownloadingModel = false
+    @State private var isWipingModel = false
     @State private var serverActionError: String?
     @State private var showingServerError = false
+    @State private var showingWipeModelAlert = false
     @State private var statusPollingTask: Task<Void, Never>?
 
     var body: some View {
@@ -45,6 +47,7 @@ struct TrainingView: View {
                     trainingDataSummarySection
                     trainingControlsSection
                     serverControlsSection
+                    dangerZoneSection
                 }
                 .padding()
             }
@@ -106,6 +109,14 @@ struct TrainingView: View {
             Button("OK", role: .cancel) { }
         } message: {
             Text(serverActionError ?? "An unknown error occurred.")
+        }
+        .alert("Wipe Server Model?", isPresented: $showingWipeModelAlert) {
+            Button("Wipe Model", role: .destructive) {
+                wipeServerModel()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This will delete the trained model. This action cannot be undone.")
         }
         .onDisappear {
             statusPollingTask?.cancel()
@@ -478,6 +489,42 @@ struct TrainingView: View {
         .cornerRadius(8)
     }
 
+    private var dangerZoneSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Danger Zone")
+                .font(.headline)
+                .foregroundColor(.red)
+
+            Button(action: { showingWipeModelAlert = true }) {
+                HStack {
+                    if isWipingModel {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                            .frame(width: 20, height: 20)
+                    } else {
+                        Image(systemName: "trash.fill")
+                            .frame(width: 20, height: 20)
+                    }
+                    Text(isWipingModel ? "Wiping…" : "Wipe Server Model")
+                }
+                .font(.subheadline)
+                .foregroundColor(.red)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(Color.red.opacity(0.08))
+                .cornerRadius(8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.red.opacity(0.3), lineWidth: 1)
+                )
+            }
+            .disabled(isWipingModel)
+        }
+        .padding()
+        .background(Color.red.opacity(0.04))
+        .cornerRadius(8)
+    }
+
     @ViewBuilder
     private var uploadStatusRow: some View {
         switch trainingDataManager.uploadState {
@@ -693,6 +740,25 @@ struct TrainingView: View {
                 }
             }
             await MainActor.run { isDownloadingModel = false }
+        }
+    }
+
+    private func wipeServerModel() {
+        isWipingModel = true
+        Task {
+            do {
+                try await apiClient.wipeModel()
+                await MainActor.run {
+                    serverStatus = nil
+                    appSettings.updateModelConfig()
+                }
+            } catch {
+                await MainActor.run {
+                    serverActionError = error.localizedDescription
+                    showingServerError = true
+                }
+            }
+            await MainActor.run { isWipingModel = false }
         }
     }
 
