@@ -210,6 +210,43 @@ class GestureModelAPIClient: ObservableObject {
         return destURL
     }
 
+    // MARK: - Wipe Model
+
+    /// Sends DELETE /model to the server, then removes the local .tflite and sidecar files.
+    func wipeModel() async throws {
+        if Self.IS_MOCKING_SERVER {
+            simulateLog("DELETE", path: "/model")
+            deleteLocalModelFiles()
+            return
+        }
+
+        var request = URLRequest(url: baseURL.appendingPathComponent("model"))
+        request.httpMethod = "DELETE"
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let detail = (try? JSONDecoder().decode(ServerErrorDetail.self, from: data))?.detail
+                ?? HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)
+            throw APIError.httpError(statusCode: httpResponse.statusCode, detail: detail)
+        }
+
+        deleteLocalModelFiles()
+    }
+
+    private func deleteLocalModelFiles() {
+        let modelURL = tfliteModelURL()
+        let sidecarURL = modelURL.deletingLastPathComponent().appendingPathComponent("gesture_ids.json")
+        for url in [modelURL, sidecarURL] {
+            if FileManager.default.fileExists(atPath: url.path) {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+        print("[GestureModelAPIClient] Local model files removed")
+    }
+
     // MARK: - Helpers
 
     func tfliteModelURL() -> URL {
