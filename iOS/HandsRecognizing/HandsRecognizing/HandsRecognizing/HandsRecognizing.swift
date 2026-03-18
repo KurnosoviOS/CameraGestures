@@ -98,7 +98,7 @@ public class HandsRecognizing: NSObject {
         // Complete any pending handfilm
         if !currentHandfilm.frames.isEmpty {
             handfilmCallback?(currentHandfilm)
-            currentHandfilm.clear()
+            currentHandfilm = HandFilm()
         }
     }
     
@@ -243,7 +243,7 @@ public class HandsRecognizing: NSObject {
         // Check if handfilm is complete
         if currentHandfilm.duration >= config.handfilmMaxDuration {
             handfilmCallback?(currentHandfilm)
-            currentHandfilm.clear()
+            currentHandfilm = HandFilm()
         }
     }
     

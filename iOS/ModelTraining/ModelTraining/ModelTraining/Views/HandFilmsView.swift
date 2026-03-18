@@ -135,14 +135,14 @@ struct HandFilmsView: View {
                 Slider(
                     value: Binding(
                         get: { Double(currentFrameIndex) },
-                        set: { currentFrameIndex = Int($0) }
+                        set: { newValue in
+                            currentFrameIndex = Int(newValue)
+                            if isPlaying { stopPlayback() }
+                        }
                     ),
                     in: 0...Double(max(frameCount - 1, 1)),
                     step: 1
                 )
-                .onChange(of: currentFrameIndex) { _ in
-                    if isPlaying { stopPlayback() }
-                }
             }
 
             HStack(spacing: 16) {
