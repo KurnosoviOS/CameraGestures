@@ -360,6 +360,9 @@ class TrainingSeriesCoordinator: ObservableObject {
             guard !Task.isCancelled else { return }
 
             // --- Recording ---
+            // Reset the handfilm buffer so frames accumulated during countdown/pause
+            // don't contaminate this capture window.
+            gestureRecognizer?.resetHandfilm()
             phase = .recording
             filmReady = false
 

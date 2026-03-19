@@ -184,6 +184,13 @@ public class HandGestureRecognizing {
     
     // MARK: - Configuration Updates
     
+    /// Discard the in-progress handfilm buffer and start fresh.
+    /// Call this just before each recording window to prevent frames accumulated
+    /// during countdown/pause phases from contaminating the captured film.
+    public func resetHandfilm() {
+        handsRecognizer.resetHandfilm()
+    }
+
     /// Load (or reload) the gesture model from a file path without restarting the recognizer.
     /// Call this after downloading a new model from the server.
     public func loadModel(from path: String, gestureIds: [String] = []) throws {

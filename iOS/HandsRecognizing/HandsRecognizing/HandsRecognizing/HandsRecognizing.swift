@@ -87,6 +87,7 @@ public class HandsRecognizing: NSObject {
             throw HandsRecognizingError.cameraNotAvailable
         }
         
+        currentHandfilm = HandFilm()
         try startCameraCapture()
     }
     
@@ -236,7 +237,13 @@ public class HandsRecognizing: NSObject {
     private func processHandshot(_ handshot: HandShot) {
         // Call handshot callback
         handshotCallback?(handshot)
-        
+
+        // Anchor the film's startTime to the first real frame so warm-up
+        // delay between start() and the first MediaPipe result doesn't inflate duration.
+        if currentHandfilm.frames.isEmpty {
+            currentHandfilm = HandFilm(startTime: handshot.timestamp)
+        }
+
         // Add to current handfilm
         currentHandfilm.addFrame(handshot)
         
@@ -282,6 +289,13 @@ extension HandsRecognizing {
     /// Get current handfilm (for debugging)
     public func getCurrentHandfilm() -> HandFilm {
         return currentHandfilm
+    }
+
+    /// Discard the in-progress handfilm and start a fresh one.
+    /// Call this just before a recording window so accumulated frames from
+    /// countdown/pause phases don't contaminate the captured film.
+    public func resetHandfilm() {
+        currentHandfilm = HandFilm()
     }
 }
 
